@@ -1,12 +1,29 @@
 import telebot
 from telebot import types, custom_filters
-from telebot.handler_backends import State, StatesGroup #States
+from telebot.handler_backends import State, StatesGroup
 from telebot.storage import StateMemoryStorage
 from environs import Env
+from django.core.wsgi import get_wsgi_application
 
 
 env = Env()
 env.read_env()
+application = get_wsgi_application()
+from main.models import Salon, Master, Schedule, Appointment, Service
+
+
+START_KEYBOARD_BUTTONS = [
+    "Позвонить в салон",
+    "Выбрать салон",
+    "Выбрать услугу",
+    "Выбрать мастера"
+]
+APPROVE_KEYBOARD_BUTTONS = [
+    "Принимаю",
+    "Не принимаю",
+]
+
+
 state_storage = StateMemoryStorage()
 bot = telebot.TeleBot(env('TELEGRAM_BOT_TOKEN'), state_storage=state_storage)
 
@@ -19,75 +36,83 @@ class BotStates(StatesGroup):
     select_service = State()
     select_master = State()
     select_salon = State()
-    get_phone = State()
-    
-
-# Клавиатура для первого состояния
-start_markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-start_markup.add(types.KeyboardButton("Позвонить в салон"))
-start_markup.add(types.KeyboardButton("Выбрать салон"))
-start_markup.add(types.KeyboardButton("Выбрать услугу"))
-start_markup.add(types.KeyboardButton("Выбрать мастера"))
-
-# Клавиатура для подтверждения согласия на обработку данных
-confirm_agreement_markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-confirm_agreement_markup.add(types.KeyboardButton("Принимаю"))
-confirm_agreement_markup.add(types.KeyboardButton("Не принимаю"))
 
 
-salon_markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-salon_markup.add(types.KeyboardButton("1 салон"))
-salon_markup.add(types.KeyboardButton("2 салон"))
+def get_reply_keyboard(model_objects):
+    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    for obj in model_objects:
+        button_text = str(obj)
+        keyboard.add(types.KeyboardButton(button_text))
+    return keyboard
 
-
-master_markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-master_markup.add(types.KeyboardButton("1 мастер"))
-master_markup.add(types.KeyboardButton("2 мастер"))
-
-
-service_markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-service_markup.add(types.KeyboardButton("1 услуга"))
-service_markup.add(types.KeyboardButton("2 услуга"))
 
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.set_state(message.from_user.id, BotStates.user_has_selected, message.chat.id)
-    bot.send_message(message.chat.id, "Привет, я бот салона красоты, что бы вы хотели сделать?", reply_markup=start_markup)
-
+    bot.send_message(message.chat.id,
+                     "Привет, я бот салона красоты, что бы вы хотели сделать?",
+                     reply_markup=get_reply_keyboard(START_KEYBOARD_BUTTONS))
 
 
 @bot.message_handler(state=BotStates.user_has_selected)
 def process_start(message):
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
         data['select'] = message.text
+    delete_keyboard = telebot.types.ReplyKeyboardRemove()
     if message.text == "Позвонить в салон":
-        bot.send_message(message.chat.id, "Телефон менеджера: +7-921-123-45-67 \n Для записи через бота введите /start")
+        bot.send_message(message.chat.id,
+                         "Телефон менеджера: +7-921-123-45-67 \n Для записи через бота введите /start",
+                        reply_markup=delete_keyboard)
     else:
         bot.set_state(message.from_user.id, BotStates.approve_pd, message.chat.id)
-        bot.send_message(message.chat.id, "Для получения услуг необходимо принять согласие на обработку персональных данных.")
+        bot.send_message(message.chat.id,
+                        "Для получения услуг необходимо принять согласие на обработку персональных данных.",
+                         reply_markup=delete_keyboard)
         bot.send_document(message.chat.id, open('agreement.pdf', 'rb'))
-        bot.send_message(message.chat.id, "Принимаете согласие?", reply_markup=confirm_agreement_markup)
+        bot.send_message(message.chat.id,
+                         "Принимаете согласие?",
+                         reply_markup=get_reply_keyboard(APPROVE_KEYBOARD_BUTTONS))
 
 
 @bot.message_handler(state=BotStates.approve_pd)
 def process_confirm_agreement(message):
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
+        data['approved'] = True if message.text == "Принимаю" else False
+        delete_keyboard = telebot.types.ReplyKeyboardRemove()
         if message.text == "Принимаю":
-            bot.send_message(message.chat.id, "Согласие принято!", reply_markup=start_markup)
-            print(data)
+            bot.send_message(message.chat.id,
+                             "Согласие принято!",
+                             reply_markup=delete_keyboard)
             if data['select'] == 'Выбрать салон':
-                bot.set_state(message.from_user.id, BotStates.select_salon, message.chat.id)
-                bot.send_message(message.chat.id, "Выберите салон", reply_markup=salon_markup)
+                salons = list(Salon.objects.values_list('name', flat=True))
+                bot.set_state(message.from_user.id,
+                              BotStates.select_salon,
+                              message.chat.id)
+                bot.send_message(message.chat.id,
+                                 "Выберите салон",
+                                 reply_markup=get_reply_keyboard(salons))
             elif data['select'] == 'Выбрать мастера':
-                bot.set_state(message.from_user.id, BotStates.select_master, message.chat.id)
-                bot.send_message(message.chat.id, "Выберите мастера", reply_markup=master_markup)
+                masters = list(Master.objects.values_list('fullname', flat=True))
+                bot.set_state(message.from_user.id,
+                              BotStates.select_master,
+                              message.chat.id)
+                bot.send_message(message.chat.id,
+                                 "Выберите мастера",
+                                 reply_markup=get_reply_keyboard(masters))
             elif data['select'] == 'Выбрать услугу':
-                bot.set_state(message.from_user.id, BotStates.select_service, message.chat.id)
-                bot.send_message(message.chat.id, "Выберите услугу", reply_markup=service_markup)
-
+                services = list(Service.objects.values_list('name', flat=True))
+                bot.set_state(message.from_user.id,
+                              BotStates.select_service,
+                              message.chat.id)
+                bot.send_message(message.chat.id,
+                                 "Выберите услугу",
+                                 reply_markup=get_reply_keyboard(services))
         else:
-            bot.send_message(message.chat.id, "Вы отказались от согласия. Возвращаемся в начало.", reply_markup=start_markup)
-            bot.register_next_step_handler(message, process_start)
+            bot.send_message(message.chat.id,
+                             "Вы отказались от согласия. Для записи через бота введите /start",
+                             reply_markup=delete_keyboard)
+            bot.set_state(message.from_user.id,
+                          BotStates.start, message.chat.id)
 
 
 @bot.message_handler(state=BotStates.select_salon)
